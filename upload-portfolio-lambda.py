@@ -8,20 +8,34 @@ def lambda_handler(event, context):
     sns = boto3.resource('sns')
     topic = sns.Topic('arn:aws:sns:eu-central-1:130311167614:deployPortfolioTopic')
     s3 = boto3.resource('s3', config=Config(signature_version='s3v4'))
+    location = {
+        "bucketName": 'portfoliocv.build',
+        "objectKey": 'portfoliocv.zip'
+    }
 
     try:
-    portfolio_bucket = s3.Bucket('portfoliocv')
-    build_bucket = s3.Bucket('portfoliocv.build')
+        job = event.get("CodePipeline.job")
+        if job:
+            for artifact in job["data"]["inputArtifacts"]:
+                if artifact["name"] == "MyAppBuild":
+                    location = artifact["location"]["s3Location"]
+        print("Building portfolio from " + str(location))
 
-    portfolio_zip = StringIO.StringIO()
-    build_bucket.download_fileobj('portfoliocv.zip', portfolio_zip)
+        portfolio_bucket = s3.Bucket('portfoliocv')
+        build_bucket = s3.Bucket(location["bucketName"])
 
-    with zipfile.ZipFile(portfolio_zip) as myzip:
-        for nm in myzip.namelist():
-            obj = myzip.open(nm)
-            portfolio_bucket.upload_fileobj(obj, nm, ExtraArgs={'ContentType': mimetypes.guess_type(nm)[0]})
-            portfolio_bucket.Object(nm).Acl().put(ACL='public-read')
-            topic.publish(Subject="Portfolio deploy", Message="Portfolio deployed successfully!")
-    except:
+        portfolio_zip = StringIO.StringIO()
+        build_bucket.download_fileobj(location["objectKey"], portfolio_zip)
+
+        with zipfile.ZipFile(portfolio_zip) as myzip:
+            for nm in myzip.namelist():
+                obj = myzip.open(nm)
+                portfolio_bucket.upload_fileobj(obj, nm, ExtraArgs={'ContentType': mimetypes.guess_type(nm)[0]})
+                portfolio_bucket.Object(nm).Acl().put(ACL='public-read')
+                topic.publish(Subject="Portfolio deploy", Message="Portfolio deployed successfully!")
+                if job:
+                    code_pipeline = boto3.client('codepipeline')
+                    code_pipeline.put_job_success_result(jobId=job["id"])
+    except Exception:
             topic.publish(Subject="Portfolio deploy failed", Message="Portfolio deploy failed")
     return 'Hello from Lambda!'
